@@ -37,7 +37,8 @@ class TestFillConstantOp(AutoScanTest):
             thread=[1, 2, 4])
         self.enable_testing_on_place(TargetType.NNAdapter, PrecisionType.FP32)
         self.enable_devices_on_nnadapter(device_names=[
-            "cambricon_mlu", "nvidia_tensorrt", "intel_openvino"
+            "cambricon_mlu", "nvidia_tensorrt", "intel_openvino",
+            "kunlunxin_xtcl"
         ])
 
     def is_program_valid(self,
@@ -54,6 +55,7 @@ class TestFillConstantOp(AutoScanTest):
             st.lists(
                 st.integers(
                     min_value=1, max_value=10), min_size=1, max_size=4))
+        in_shape = draw(st.sampled_from([in_shape, []]))
         dtype = draw(st.sampled_from([2, 3, 5]))
 
         with_value_tensor = draw(st.sampled_from([True, False]))
@@ -120,7 +122,6 @@ class TestFillConstantOp(AutoScanTest):
                     high=10,
                     shape=[1]))
             }
-
         fill_constant_op = OpConfig(
             type="fill_constant",
             inputs=op_inputs,
@@ -153,6 +154,33 @@ class TestFillConstantOp(AutoScanTest):
             teller1, IgnoreReasons.PADDLELITE_NOT_SUPPORT,
             "Lite does not support 'shape is form tensor' or 'value is from tensor' "
             "or 'dtype is not float32' on nvidia_tensorrt.")
+
+        def teller2(program_config, predictor_config):
+            if self.get_nnadapter_device_name() == "kunlunxin_xtcl":
+                in_num = len(program_config.inputs)
+                if in_num != 0:
+                    return True
+
+        self.add_ignore_check_case(
+            teller2, IgnoreReasons.PADDLELITE_NOT_SUPPORT,
+            "Lite does not support 'shape is form tensor' or 'value is from tensor' on kunlunxin_xtcl."
+        )
+
+        def _teller3(program_config, predictor_config):
+            target_type = predictor_config.target()
+            in_x_shape = []
+            in_y_shape = []
+            if "value_data" in program_config.inputs:
+                in_x_shape = list(program_config.inputs["value_data"].shape)
+            if "shape_data" in program_config.inputs:
+                in_y_shape = list(program_config.inputs["shape_data"].shape)
+            if target_type != TargetType.ARM and target_type != TargetType.Host:
+                if len(in_x_shape) == 0 and len(in_y_shape) == 0:
+                    return True
+
+        self.add_ignore_check_case(
+            _teller3, IgnoreReasons.PADDLELITE_NOT_SUPPORT,
+            "Only test 0D-tensor on CPU(X86/ARM/Host) now.")
 
     def test(self, *args, **kwargs):
         self.run_and_statis(quant=False, max_examples=25)

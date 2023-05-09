@@ -442,7 +442,7 @@ class DensityPriorBoxComputeTester : public arena::TestCase {
                           order_);
   }
 
-  void PrepareOpDesc(cpp::OpDesc* op_desc) {
+  void PrepareOpDesc(cpp::OpDesc* op_desc) override {
     op_desc->SetType("density_prior_box");
     op_desc->SetInput("Input", {ins0});
     op_desc->SetInput("Image", {ins1});
@@ -575,7 +575,7 @@ class PriorBoxComputeTester : public arena::TestCase {
                           order_);
   }
 
-  void PrepareOpDesc(cpp::OpDesc* op_desc) {
+  void PrepareOpDesc(cpp::OpDesc* op_desc) override {
     op_desc->SetType("prior_box");
     op_desc->SetInput("Input", {ins0});
     op_desc->SetInput("Image", {ins1});
@@ -693,10 +693,6 @@ void test_prior_box(Place place) {
   int img_h = 0;
   float offset = 0.5;
   std::vector<std::string> order;
-#if defined(LITE_WITH_NNADAPTER)
-  // Parameter max_size should not be None on nnadapter, to be fixed later.
-  max_size = {120.f};
-#endif
   std::vector<float> aspect_ratios_vec;
   ExpandAspectRatios(aspect_ratio, flip, &aspect_ratios_vec);
   size_t prior_num = aspect_ratios_vec.size() * min_size.size();

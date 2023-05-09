@@ -22,8 +22,8 @@ namespace lite {
 namespace kernels {
 namespace xpu {
 
-template <class T>
-void ReshapeCompute<T>::Run() {
+template <PrecisionType PType>
+void ReshapeCompute<PType>::Run() {
   auto& param = this->template Param<param_t>();
   auto& ctx = this->ctx_->template As<XPUContext>();
   auto x = param.x;
@@ -37,16 +37,18 @@ void ReshapeCompute<T>::Run() {
   if (param.inplace) {
     auto output_lod = output->lod();
     output->ShareDataWith(*x);
-    output->Resize(output_dims);
     output->set_lod(output_lod);
   } else {
-    int r = xdnn::copy<T>(ctx.GetRawContext(),
-                          x->template data<T>(),
-                          output->template mutable_data<T>(TARGET(kXPU)),
-                          x->numel());
+    output->set_precision(x->precision());
+    output->template mutable_data(TARGET(kXPU), x->memory_size());
+    int r = xdnn::copy<int8_t>(ctx.GetRawContext(),
+                               x->template data<int8_t>(),
+                               static_cast<int8_t*>(output->raw_data()),
+                               x->memory_size());
 
     CHECK_EQ(r, 0);
   }
+  output->Resize(output_dims);
 }
 
 }  // namespace xpu
@@ -54,86 +56,84 @@ void ReshapeCompute<T>::Run() {
 }  // namespace lite
 }  // namespace paddle
 
-REGISTER_LITE_KERNEL(reshape2,
-                     kXPU,
-                     kFloat,
-                     kNCHW,
-                     paddle::lite::kernels::xpu::ReshapeCompute<float>,
-                     float32)
-    .BindInput("X", {LiteType::GetTensorTy(TARGET(kXPU))})
+REGISTER_LITE_KERNEL(
+    reshape2,
+    kXPU,
+    kAny,
+    kAny,
+    paddle::lite::kernels::xpu::ReshapeCompute<PRECISION(kAny)>,
+    def)
+    .BindInput("X",
+               {LiteType::GetTensorTy(TARGET(kXPU),
+                                      PRECISION(kAny),
+                                      DATALAYOUT(kAny))})
     .BindInput("ShapeTensor",
                {LiteType::GetTensorTy(TARGET(kHost), PRECISION(kInt32))})
     .BindInput("Shape",
                {LiteType::GetTensorTy(TARGET(kHost), PRECISION(kInt32))})
-    .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kXPU))})
+    .BindOutput("Out",
+                {LiteType::GetTensorTy(TARGET(kXPU),
+                                       PRECISION(kAny),
+                                       DATALAYOUT(kAny))})
     .BindOutput("XShape", {LiteType::GetTensorTy(TARGET(kHost))})
     .Finalize();
 
-REGISTER_LITE_KERNEL(reshape2,
-                     kXPU,
-                     kFloat,
-                     kNCHW,
-                     paddle::lite::kernels::xpu::ReshapeCompute<int>,
-                     int32)
-    .BindInput("X", {LiteType::GetTensorTy(TARGET(kXPU), PRECISION(kInt32))})
+REGISTER_LITE_KERNEL(
+    reshape,
+    kXPU,
+    kAny,
+    kAny,
+    paddle::lite::kernels::xpu::ReshapeCompute<PRECISION(kAny)>,
+    def)
+    .BindInput("X",
+               {LiteType::GetTensorTy(TARGET(kXPU),
+                                      PRECISION(kAny),
+                                      DATALAYOUT(kAny))})
     .BindInput("ShapeTensor",
                {LiteType::GetTensorTy(TARGET(kHost), PRECISION(kInt32))})
     .BindInput("Shape",
                {LiteType::GetTensorTy(TARGET(kHost), PRECISION(kInt32))})
-    .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kXPU), PRECISION(kInt32))})
-    .BindOutput("XShape", {LiteType::GetTensorTy(TARGET(kHost))})
+    .BindOutput("Out",
+                {LiteType::GetTensorTy(TARGET(kXPU),
+                                       PRECISION(kAny),
+                                       DATALAYOUT(kAny))})
     .Finalize();
 
-REGISTER_LITE_KERNEL(reshape2,
-                     kXPU,
-                     kFloat,
-                     kNCHW,
-                     paddle::lite::kernels::xpu::ReshapeCompute<int64_t>,
-                     int64)
-    .BindInput("X", {LiteType::GetTensorTy(TARGET(kXPU), PRECISION(kInt64))})
-    .BindInput("ShapeTensor",
-               {LiteType::GetTensorTy(TARGET(kHost), PRECISION(kInt32))})
+REGISTER_LITE_KERNEL(
+    flatten,
+    kXPU,
+    kAny,
+    kAny,
+    paddle::lite::kernels::xpu::ReshapeCompute<PRECISION(kAny)>,
+    def)
+    .BindInput("X",
+               {LiteType::GetTensorTy(TARGET(kXPU),
+                                      PRECISION(kAny),
+                                      DATALAYOUT(kAny))})
     .BindInput("Shape",
                {LiteType::GetTensorTy(TARGET(kHost), PRECISION(kInt32))})
-    .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kXPU), PRECISION(kInt64))})
-    .BindOutput("XShape", {LiteType::GetTensorTy(TARGET(kHost))})
+    .BindOutput("Out",
+                {LiteType::GetTensorTy(TARGET(kXPU),
+                                       PRECISION(kAny),
+                                       DATALAYOUT(kAny))})
     .Finalize();
 
-REGISTER_LITE_KERNEL(reshape,
-                     kXPU,
-                     kFloat,
-                     kNCHW,
-                     paddle::lite::kernels::xpu::ReshapeCompute<float>,
-                     float32)
-    .BindInput("X", {LiteType::GetTensorTy(TARGET(kXPU))})
-    .BindInput("ShapeTensor",
-               {LiteType::GetTensorTy(TARGET(kHost), PRECISION(kInt32))})
+REGISTER_LITE_KERNEL(
+    flatten2,
+    kXPU,
+    kAny,
+    kAny,
+    paddle::lite::kernels::xpu::ReshapeCompute<PRECISION(kAny)>,
+    def)
+    .BindInput("X",
+               {LiteType::GetTensorTy(TARGET(kXPU),
+                                      PRECISION(kAny),
+                                      DATALAYOUT(kAny))})
     .BindInput("Shape",
                {LiteType::GetTensorTy(TARGET(kHost), PRECISION(kInt32))})
-    .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kXPU))})
-    .Finalize();
-
-REGISTER_LITE_KERNEL(flatten,
-                     kXPU,
-                     kFloat,
-                     kNCHW,
-                     paddle::lite::kernels::xpu::ReshapeCompute<float>,
-                     float32)
-    .BindInput("X", {LiteType::GetTensorTy(TARGET(kXPU))})
-    .BindInput("Shape",
-               {LiteType::GetTensorTy(TARGET(kHost), PRECISION(kInt32))})
-    .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kXPU))})
-    .Finalize();
-
-REGISTER_LITE_KERNEL(flatten2,
-                     kXPU,
-                     kFloat,
-                     kNCHW,
-                     paddle::lite::kernels::xpu::ReshapeCompute<float>,
-                     float32)
-    .BindInput("X", {LiteType::GetTensorTy(TARGET(kXPU))})
-    .BindInput("Shape",
-               {LiteType::GetTensorTy(TARGET(kHost), PRECISION(kInt32))})
-    .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kXPU))})
+    .BindOutput("Out",
+                {LiteType::GetTensorTy(TARGET(kXPU),
+                                       PRECISION(kAny),
+                                       DATALAYOUT(kAny))})
     .BindOutput("XShape", {LiteType::GetTensorTy(TARGET(kHost))})
     .Finalize();

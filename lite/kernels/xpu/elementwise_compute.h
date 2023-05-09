@@ -21,14 +21,21 @@ namespace lite {
 namespace kernels {
 namespace xpu {
 
-template <class T, class Functor>
-class ElementwiseCompute : public KernelLite<TARGET(kXPU), PRECISION(kFloat)> {
+template <class T, class Functor, PrecisionType PType>
+class ElementwiseCompute : public KernelLite<TARGET(kXPU), PType> {
  public:
   using param_t = operators::ElementwiseParam;
 
   virtual void Run();
+  void PrepareForRun() override;
 
   virtual ~ElementwiseCompute() = default;
+
+ private:
+  XPUScratchPadGuard quant_x_max_value_guard_;
+  XPUScratchPadGuard quant_y_max_value_guard_;
+  XPUScratchPadGuard quant_z_max_value_guard_;
+  XPUScratchPadGuard broadcast_y_guard_;
 };
 
 }  // namespace xpu

@@ -35,6 +35,11 @@ void CastCompute::Run() {
   if (param.X->precision() == PrecisionType::kFloat) {
     param.in_dtype = 5;
   }
+#if defined(ENABLE_ARM_FP16) && defined(LITE_WITH_ARM)
+  if (param.X->precision() == PrecisionType::kFP16) {
+    param.in_dtype = 4;
+  }
+#endif
   // BOOL = 0;INT16 = 1;INT32 = 2;INT64 = 3;FP16 = 4;FP32 = 5;FP64 = 6;
   // SIZE_T = 19;UINT8 = 20;INT8 = 21;
   if (param.in_dtype == param.out_dtype && param.in_dtype == 5) {
@@ -83,6 +88,11 @@ void CastCompute::Run() {
     const bool* x_data_end = x_data_begin + param.X->numel();
     int32_t* out_data = param.Out->mutable_data<int32_t>();
     std::transform(x_data_begin, x_data_end, out_data, TransOp<bool, int32_t>);
+  } else if (param.in_dtype == 0 && param.out_dtype == 0) {  // bool -> bool
+    const bool* x_data_begin = param.X->data<bool>();
+    const bool* x_data_end = x_data_begin + param.X->numel();
+    bool* out_data = param.Out->mutable_data<bool>();
+    std::transform(x_data_begin, x_data_end, out_data, TransOp<bool, bool>);
   } else if (param.in_dtype == 3 && param.out_dtype == 5) {  // int64->fp32
     const int64_t* x_data_begin = param.X->data<int64_t>();
     const int64_t* x_data_end = x_data_begin + param.X->numel();
@@ -111,6 +121,11 @@ void CastCompute::Run() {
     const float* x_data_end = x_data_begin + param.X->numel();
     int64_t* out_data = param.Out->mutable_data<int64_t>();
     std::transform(x_data_begin, x_data_end, out_data, TransOp<float, int64_t>);
+  } else if (param.in_dtype == 5 && param.out_dtype == 0) {  // float32 -> bool
+    const float* x_data_begin = param.X->data<float>();
+    const float* x_data_end = x_data_begin + param.X->numel();
+    bool* out_data = param.Out->mutable_data<bool>();
+    std::transform(x_data_begin, x_data_end, out_data, TransOp<float, bool>);
   } else if (param.in_dtype == 0 && param.out_dtype == 2) {  // bool -> INT32
     const bool* x_data_begin = param.X->data<bool>();
     const bool* x_data_end = x_data_begin + param.X->numel();
@@ -121,7 +136,7 @@ void CastCompute::Run() {
     const int32_t* x_data_end = x_data_begin + param.X->numel();
     bool* out_data = param.Out->mutable_data<bool>();
     std::transform(x_data_begin, x_data_end, out_data, TransOp<int32_t, bool>);
-  } else if (param.in_dtype == 2 && param.out_dtype == 2) {  // INT32 -> bool
+  } else if (param.in_dtype == 2 && param.out_dtype == 2) {  // INT32 -> INT32
     const int32_t* x_data_begin = param.X->data<int32_t>();
     const int32_t* x_data_end = x_data_begin + param.X->numel();
     int32_t* out_data = param.Out->mutable_data<int32_t>();
@@ -138,6 +153,12 @@ void CastCompute::Run() {
     const float* in_data = param.X->data<float>();
     float16_t* out_data = param.Out->mutable_data<float16_t>();
     lite::arm::math::fp16::fp32_to_fp16(in_data, out_data, param.X->numel());
+  } else if (param.in_dtype == 4 && param.out_dtype == 2) {  // float16 -> int32
+    const float16_t* in_data = param.X->data<float16_t>();
+    int* out_data = param.Out->mutable_data<int>();
+    for (int i = 0; i < param.X->numel(); i++) {
+      out_data[i] = static_cast<int>(in_data[i]);
+    }
 #endif
   } else {
     LOG(FATAL) << "other has not been implemented transform with dtype"

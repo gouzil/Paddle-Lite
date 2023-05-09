@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <math.h>
 #include <memory>
 #include <string>
 #include "lite/backends/xpu/math.h"
@@ -379,6 +380,7 @@ class XPUConv2dFuser : public FuseBase {
               << ", size of `conv_filter_channels` is: " << f_dims[0];
           return;
         }
+
       } else {
         for (int i = 0; i < f_dims[0]; ++i) {
           fusion_bias_ptr[i] = 0.0f;
@@ -399,21 +401,56 @@ class XPUConv2dFuser : public FuseBase {
         int filter_len = filter_t->numel();
         int filter_stride = filter_len / mean_len;
 
-        float* filter_on_host = filter_t->mutable_data<float>();
         float* scale_on_host = scale_t->mutable_data<float>();
         float* bias_on_host = bias_t->mutable_data<float>();
         float* mean_on_host = mean_t->mutable_data<float>();
         float* var_on_host = var_t->mutable_data<float>();
 
-        for (int i = 0; i < mean_len; ++i) {
-          scale_on_host[i] =
-              scale_on_host[i] / sqrtf(var_on_host[i] + 0.00001f);
+        float epsilon = 0.00001f;
+        if (matched.at("bn")->stmt()->op_info()->HasAttr("epsilon")) {
+          epsilon =
+              matched.at("bn")->stmt()->op_info()->GetAttr<float>("epsilon");
         }
+
         for (int i = 0; i < mean_len; ++i) {
-          for (int j = 0; j < filter_stride; ++j) {
-            filter_on_host[i * filter_stride + j] *= scale_on_host[i];
+          scale_on_host[i] = scale_on_host[i] / sqrtf(var_on_host[i] + epsilon);
+        }
+        // FP32 kernel： reset Weight value.
+        auto op_desc_origin = *matched.at("conv")->stmt()->op_info();
+        if (!(op_desc_origin.HasAttr("enable_int8") &&
+              op_desc_origin.GetAttr<bool>("enable_int8"))) {
+          float* filter_on_host = filter_t->mutable_data<float>();
+          for (int i = 0; i < mean_len; ++i) {
+            for (int j = 0; j < filter_stride; ++j) {
+              filter_on_host[i * filter_stride + j] *= scale_on_host[i];
+            }
           }
         }
+
+        // INT8 kernel : reset Weight max_scale value.
+        if ((op_desc_origin.HasAttr("enable_int8") &&
+             op_desc_origin.GetAttr<bool>("enable_int8"))) {
+          auto max_weight_vector = op_desc_origin.GetInputScale(filter_name);
+          CHECK_EQ(max_weight_vector.size(), mean_len)
+              << "Weight max_scale size must equal batch_norm sacle/mean "
+                 "size.";
+          for (int i = 0; i < mean_len; i++) {
+            max_weight_vector[i] *= fabs(scale_on_host[i]);
+          }
+
+          matched.at("conv")->stmt()->mutable_op_info()->SetInputScale(
+              filter_name, max_weight_vector);
+          int8_t* filter_on_host = filter_t->mutable_data<int8_t>();
+
+          for (int i = 0; i < mean_len; i++) {
+            if (scale_on_host[i] < 0) {
+              for (int j = 0; j < filter_stride; ++j) {
+                filter_on_host[i * filter_stride + j] *= -1;
+              }
+            }
+          }
+        }
+
         for (int i = 0; i < mean_len; ++i) {
           bias_on_host[i] +=
               (fusion_bias_ptr[i] - mean_on_host[i]) * scale_on_host[i];
@@ -435,6 +472,7 @@ class XPUConv2dFuser : public FuseBase {
                                        {"relu", 1},
                                        {"sigmoid", 2},
                                        {"tanh", 3},
+                                       {"gelu", 4},
                                        {"leaky_relu", 5},
                                        {"hard_swish", 14},
                                        {"hard_sigmoid", 15},
@@ -488,8 +526,112 @@ class XPUConv2dFuser : public FuseBase {
         TARGET(kXPU), PRECISION(kFloat), DATALAYOUT(kNCHW));
     auto* max_output_tensor = scope->NewTensor(max_output_name);
     max_output_tensor->set_precision(paddle::lite_api::PrecisionType::kFloat);
-    max_output_tensor->set_persistable(true);
     op_desc.SetOutput("OutputMax", {max_output_name});
+
+    // set conv2d int8 attributes
+    if (matched.at("conv")->stmt()->op_info()->HasAttr("enable_int8") &&
+        matched.at("conv")->stmt()->op_info()->GetAttr<bool>("enable_int8")) {
+      op_desc.SetAttr<bool>("enable_int8", true);
+      auto op_info = matched.at("conv")->stmt()->op_info();
+
+      auto get_scale_name = [&op_info](const std::string& name) {
+        std::string argname;
+        int index;
+        CHECK(op_info->GetInputArgname(name, &argname));
+        CHECK(op_info->GetInputIndex(name, &index));
+        std::string scale_name = argname + to_string(index) + "_scale";
+        return scale_name;
+      };
+
+      op_desc.SetAttr<std::vector<float>>(
+          get_scale_name(input_name),
+          {matched.at("conv")->stmt()->op_info()->GetInputScale(
+              input_name)[0]});
+      bool per_channel = false;
+      std::vector<float> weight_max;
+      auto max_weight_vector =
+          matched.at("conv")->stmt()->op_info()->GetInputScale(filter_name);
+
+      if (IsPerTensorQuant(max_weight_vector)) {
+        per_channel = false;
+        VLOG(4) << "xpu conv quant weight only use one  max value. ";
+        weight_max.push_back(max_weight_vector[0]);
+      } else {
+        per_channel = true;
+        VLOG(4) << "xpu conv quant weight  use  max value per channel.";
+        for (auto wm : max_weight_vector) {
+          weight_max.push_back(wm);
+        }
+      }
+
+      op_desc.SetAttr<bool>("per_channel", per_channel);
+      op_desc.SetAttr<std::vector<float>>(get_scale_name(filter_name),
+                                          weight_max);
+
+      if (with_branch_) {
+        std::string branch_name = matched.at("ew_branch_add_in")->arg()->name;
+        op_desc.SetAttr<std::vector<float>>(
+            "Branch0_scale",
+            {(matched.at("ew_branch_add_in")->inlinks.front())
+                 ->stmt()
+                 ->op_info()
+                 ->GetOutputScale(branch_name)});
+      }
+
+      std::string out_op_name{};
+      if (act_type_ != "linear") {
+        out_op_name = "act";
+      } else if (with_branch_) {
+        out_op_name = "ew_branch_add";
+      } else if (with_bn_) {
+        out_op_name = "bn";
+      } else if (with_conv_bias_) {
+        out_op_name = "ew_bias_add";
+      } else {
+        out_op_name = "conv";
+      }
+
+      // Set conv2d output max value.(slim provided FP32 precision in
+      // out_threshold)
+      float out_scale = 0;
+      if (matched.at(out_op_name)
+              ->stmt()
+              ->op_info()
+              ->HasOutputScale(output_name)) {
+        out_scale = matched.at(out_op_name)
+                        ->stmt()
+                        ->op_info()
+                        ->GetOutputScale(output_name)[0];
+        if (out_scale == 0) {
+          VLOG(1) << "output_name:" << output_name;
+        }
+
+      } else {
+        VLOG(1) << "We default set out_scale=0,thanks to there is not out "
+                   "scale value in this op.";
+        VLOG(1) << "output_name:" << output_name;
+      }
+
+      op_desc.SetAttr<std::vector<float>>("Output0_scale", {out_scale});
+    }
+
+    // TODO(quwei): refactor in order to Conform to the new format.
+    // set conv2d int16 attributes
+    if (matched.at("conv")->stmt()->op_info()->HasAttr("enable_int16") &&
+        matched.at("conv")->stmt()->op_info()->GetAttr<bool>("enable_int16")) {
+      op_desc.SetAttr<bool>("enable_int16", true);
+      op_desc.SetAttr<std::vector<float>>(
+          "Input0_scale",
+          {((2 << 15) - 1) *
+           matched.at("conv")->stmt()->op_info()->GetInputScale(
+               input_name)[0]});
+
+      op_desc.SetAttr<std::vector<float>>(
+          "Filter0_scale",
+          {((2 << 15) - 1) *
+           matched.at("conv")->stmt()->op_info()->GetInputScale(
+               filter_name)[0]});
+    }
 
     auto conv_op = LiteOpRegistry::Global().Create("__xpu__conv2d");
     auto& valid_places = conv_old->valid_places();
@@ -505,6 +647,21 @@ class XPUConv2dFuser : public FuseBase {
       DirectedLink(matched.at("ew_branch_add_in"), new_op_node);
     }
     DirectedLink(new_op_node, matched.at(output_node_name));
+  }
+
+ private:
+  bool IsPerTensorQuant(const std::vector<float>& weight_max) {
+    bool per_tensor = true;
+    CHECK_GT(weight_max.size(), 0) << "conv2d channel size: "
+                                   << weight_max.size();
+    auto first = weight_max[0];
+    for (size_t i = 1; i < weight_max.size(); ++i) {
+      if (std::abs(first - weight_max[i]) > 1e-6) {
+        per_tensor = false;
+        break;
+      }
+    }
+    return per_tensor;
   }
 
  private:
@@ -531,6 +688,7 @@ class XPUConv2dFusePass : public ProgramPass {
               for (auto act_type : {"relu",
                                     "sigmoid",
                                     "tanh",
+                                    "gelu",
                                     "leaky_relu",
                                     "hard_swish",
                                     "hard_sigmoid",

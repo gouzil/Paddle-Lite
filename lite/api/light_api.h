@@ -44,10 +44,20 @@ class LITE_API LightPredictor {
   // model file or buffer,`model_from_memory` refers to whther to load model
   // from memory.
   LightPredictor(const std::string& lite_model_file,
-                 bool model_from_memory = false) {
+                 bool use_low_precision = false) {
+    use_low_precision_ = use_low_precision;
     scope_ = std::make_shared<Scope>();
     program_desc_ = std::make_shared<cpp::ProgramDesc>();
-    Build(lite_model_file, model_from_memory);
+    Build(lite_model_file);
+  }
+
+  LightPredictor(const char* lite_model_buffer_ptr,
+                 size_t lite_model_buffer_size,
+                 bool use_low_precision = false) {
+    use_low_precision_ = use_low_precision;
+    scope_ = std::make_shared<Scope>();
+    program_desc_ = std::make_shared<cpp::ProgramDesc>();
+    Build(lite_model_buffer_ptr, lite_model_buffer_size);
   }
 
   // NOTE: This is a deprecated API and will be removed in latter release.
@@ -56,17 +66,15 @@ class LITE_API LightPredictor {
                  const std::string& param_buffer = "",
                  bool model_from_memory = false,
                  lite_api::LiteModelType model_type =
-                     lite_api::LiteModelType::kNaiveBuffer) {
+                     lite_api::LiteModelType::kNaiveBuffer,
+                 bool use_low_precision = false) {
+    use_low_precision_ = use_low_precision;
     scope_ = std::make_shared<Scope>();
     program_desc_ = std::make_shared<cpp::ProgramDesc>();
     Build(model_dir, model_buffer, param_buffer, model_type, model_from_memory);
   }
 
-  void Run() {
-    CheckInputValid();
-    program_->Run();
-    if (bool_clear_tensor_) ClearTensorArray(program_desc_);
-  }
+  void Run();
 
   /// \brief Release all tmp tensor to compress the size of the memory pool.
   /// The memory pool is considered to be composed of a list of chunks, if
@@ -74,6 +82,7 @@ class LITE_API LightPredictor {
   ///
   /// \return a boolean variable.
   bool TryShrinkMemory();
+  bool use_low_precision_ = false;
 
   // Get offset-th col of feed inputs.
   Tensor* GetInput(size_t offset);
@@ -108,13 +117,17 @@ class LITE_API LightPredictor {
   }
 #endif
 
+  void SetTargetConfigs(
+      const std::map<TargetType, std::shared_ptr<void>>& target_configs);
+  void SetStream(TargetType target, void* stream);
+
  private:
   // check if the input tensor precision type is correct.
   // would be called in Run().
   void CheckInputValid();
 
-  void Build(const std::string& lite_model_file,
-             bool model_from_memory = false);
+  void Build(const std::string& lite_model_file);
+  void Build(const char* lite_model_buffer_ptr, size_t lite_model_buffer_size);
 
   // NOTE: This is a deprecated API and will be removed in latter release.
   void Build(
@@ -125,7 +138,8 @@ class LITE_API LightPredictor {
       bool model_from_memory = false);
 
   void BuildRuntimeProgram(
-      const std::shared_ptr<const cpp::ProgramDesc>& program_desc);
+      const std::shared_ptr<const cpp::ProgramDesc>& program_desc,
+      bool use_precision_low);
 
   void DequantizeWeight();
 
@@ -137,6 +151,7 @@ class LITE_API LightPredictor {
       const std::shared_ptr<const cpp::ProgramDesc>& program_desc);
 
  private:
+  std::map<TargetType, std::shared_ptr<void>> target_configs_;
   std::shared_ptr<Scope> scope_;
   std::unique_ptr<RuntimeProgram> program_;
   std::shared_ptr<cpp::ProgramDesc> program_desc_;
@@ -176,6 +191,15 @@ class LightPredictorImpl : public lite_api::PaddlePredictor {
   ///
   /// \return a boolean variable.
   bool TryShrinkMemory() override;
+
+  void SetStream(TargetType target, void* stream) override;
+  void Synchronize() {
+#ifdef LITE_WITH_XPU
+    XPU_CALL(xpu_wait());
+#endif
+  }
+
+  bool use_low_precision_ = false;
 
  private:
   std::unique_ptr<lite::LightPredictor> raw_predictor_;

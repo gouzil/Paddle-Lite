@@ -23,7 +23,12 @@
 #include "driver/cambricon_mlu/optimizer/convert_datalayout_nchw_to_nhwc.h"
 #include "driver/cambricon_mlu/optimizer/fix_non_max_suppression.h"
 #include "driver/cambricon_mlu/optimizer/fix_quantized_ops.h"
+#include "optimizer/fuse_conv2d_activation_into_conv2d.h"
+#include "optimizer/fuse_conv2d_add_into_conv2d.h"
+#include "optimizer/fuse_conv2d_batch_norm_into_conv2d.h"
 #include "optimizer/fuse_matmul_add_into_fully_connected.h"
+#include "optimizer/fuse_matmul_dequant_add_into_fully_connected_dequant.h"
+#include "optimizer/fuse_reshape_transpose_reshape_into_channel_shuffle.h"
 #include "utility/debug.h"
 #include "utility/logging.h"
 #include "utility/modeling.h"
@@ -127,7 +132,12 @@ int Program::BuildFromCache(core::Cache* cache) {
 int Program::BuildFromModel(core::Model* model) {
   Clear();
   NNADAPTER_VLOG(5) << "Origin model:" << std::endl << Visualize(model);
+  FuseConv2DBatchNormIntoConv2D(model);
+  FuseConv2DAddIntoConv2D(model);
+  FuseConv2DActivationIntoConv2D(model);
+  FuseMatMulDequantAddIntoFullyConnectedDequant(model);
   FuseMatMulAddIntoFullyConnected(model);
+  FuseReshapeTransposeReshapeIntoChannelShuffle(model);
   FixQuantizedOps(model);
   FixNonMaxSuppression(model);
   NNADAPTER_VLOG(5) << "Optimized model:" << std::endl << Visualize(model);
@@ -286,7 +296,7 @@ int Program::Execute(uint32_t input_count,
     NNADAPTER_CHECK(arg.access);
     auto type = &output_types_[arg.index];
     auto out_dims = outputs[i]->GetDimensions();
-    type->dimensions.data[0] = out_dims[0];
+    type->dimensions.data[0] = IsScalar(out_dims) ? 1 : out_dims[0];
     auto buffer = arg.access(arg.memory, type, nullptr);
     NNADAPTER_CHECK(buffer);
     void* output_mlu_ptr = outputs[i]->GetMutableData();

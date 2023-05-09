@@ -206,7 +206,7 @@ class ConvComputeTester : public arena::TestCase {
     }
   }
 
-  void PrepareOpDesc(cpp::OpDesc* op_desc) {
+  void PrepareOpDesc(cpp::OpDesc* op_desc) override {
     op_desc->SetType(with_depthwise_ ? "depthwise_conv2d" : "conv2d");
     op_desc->SetInput("Input", {input_});
     op_desc->SetInput("Filter", {filter_});
@@ -278,10 +278,11 @@ void TestConvGroups(Place place, float abs_error = 2e-5) {
        std::vector<std::vector<int64_t>>{{1, 6, 3, 4}, {5, 12, 7, 8}}) {
     for (auto out_channels : {2, 3, 6}) {
       for (auto groups : {2, 3, 6}) {
-#if defined(LITE_WITH_NPU) || defined(NNADAPTER_WITH_HUAWEI_ASCEND_NPU) || \
-    defined(NNADAPTER_WITH_HUAWEI_KIRIN_NPU) ||                            \
-    defined(NNADAPTER_WITH_NVIDIA_TENSORRT) ||                             \
-    defined(NNADAPTER_WITH_INTEL_OPENVINO)
+#if defined(NNADAPTER_WITH_HUAWEI_ASCEND_NPU) || \
+    defined(NNADAPTER_WITH_HUAWEI_KIRIN_NPU) ||  \
+    defined(NNADAPTER_WITH_NVIDIA_TENSORRT) ||   \
+    defined(NNADAPTER_WITH_INTEL_OPENVINO) ||    \
+    defined(NNADAPTER_WITH_QUALCOMM_QNN)
         if (out_channels % groups != 0) continue;
 #endif
         std::unique_ptr<arena::TestCase> tester(new ConvComputeTester(
@@ -411,7 +412,8 @@ void TestConvAct(Place place, float abs_error = 2e-5) {
       arena::Arena arena0(std::move(tester0), place, abs_error);
       arena0.TestPrecision();
 #if defined(NNADAPTER_WITH_HUAWEI_ASCEND_NPU) || \
-    defined(NNADAPTER_WITH_NVIDIA_TENSORRT)
+    defined(NNADAPTER_WITH_NVIDIA_TENSORRT) ||   \
+    defined(NNADAPTER_WITH_QUALCOMM_QNN)
       continue;
 #endif
       std::unique_ptr<arena::TestCase> tester1(
@@ -454,6 +456,11 @@ void TestConvDepthwise(Place place, float abs_error = 2e-5) {
 #endif
 #if defined(NNADAPTER_WITH_HUAWEI_KIRIN_NPU)
                   if (act == "hard_swish") continue;
+#endif
+#if defined(NNADAPTER_WITH_QUALCOMM_QNN)
+                  if (strcmp(act, "hard_swish") || strcmp(act, "leaky_relu") ||
+                      strcmp(act, "relu6"))
+                    continue;
 #endif
                   std::unique_ptr<arena::TestCase> tester(
                       new ConvComputeTester(place,
@@ -510,9 +517,7 @@ TEST(Conv2d, precision) {
 #elif defined(NNADAPTER_WITH_HUAWEI_KIRIN_NPU)
   abs_error = 1e-1;
 #elif defined(NNADAPTER_WITH_QUALCOMM_QNN)
-  abs_error = 5e-2;
-  TestConvKsize(place, abs_error);
-  return;
+  abs_error = 1e-2;
 #elif defined(NNADAPTER_WITH_CAMBRICON_MLU)
   abs_error = 5e-2;
   TestConvKsize(place, abs_error);
@@ -534,9 +539,6 @@ TEST(Conv2d, precision) {
 #else
   return;
 #endif
-#elif defined(LITE_WITH_NPU)
-  place = TARGET(kNPU);
-  abs_error = 5e-2;  // Using fp16 in NPU
 #elif defined(LITE_WITH_X86)
   place = TARGET(kX86);
   TestConvKsize(place, abs_error);

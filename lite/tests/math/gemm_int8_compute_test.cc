@@ -214,18 +214,21 @@ bool test_gemm_int8(bool tra,
 
   /// warmup
   for (int j = 0; j < FLAGS_warmup; ++j) {
-    paddle::lite::arm::math::gemm_prepack_int8(tpackedA.data<int8_t>(),
-                                               db,
-                                               dbias,
-                                               dc_fp32,
-                                               m,
-                                               n,
-                                               k,
-                                               has_bias,
-                                               trb,
-                                               scale_merge_fp32.data(),
-                                               act_param,
-                                               &ctx);
+    paddle::lite::arm::math::gemm_prepack_int8(
+        tpackedA.data<int8_t>(),
+        db,
+        dbias,
+        dc_fp32,
+        m,
+        n,
+        k,
+        has_bias,
+        paddle::lite::arm::math::GemmMBias,
+        trb,
+        scale_merge_fp32.data(),
+        act_param,
+        &ctx,
+        false);
   }
   /// int8 output compute
   Tensor tbias_int8;
@@ -264,7 +267,8 @@ bool test_gemm_int8(bool tra,
         trb,
         scale_merge_fp32.data(),
         act_param,
-        &ctx);
+        &ctx,
+        false);
     t1.Stop();
   }
 
@@ -291,7 +295,8 @@ bool test_gemm_int8(bool tra,
         trb,
         scale_merge_int8.data(),
         act_param,
-        &ctx);
+        &ctx,
+        false);
     t1.Stop();
   }
   LOG(INFO) << "sve int8_int8 M: " << m << ", N: " << n << ", K: " << k
@@ -306,18 +311,21 @@ bool test_gemm_int8(bool tra,
 
   for (int i = 0; i < FLAGS_repeats; ++i) {
     t0.Start();
-    paddle::lite::arm::math::gemm_prepack_int8(tpackedA.data<int8_t>(),
-                                               db,
-                                               dbias_int8,
-                                               dc_int8,
-                                               m,
-                                               n,
-                                               k,
-                                               has_bias,
-                                               trb,
-                                               scale_merge_int8.data(),
-                                               act_param,
-                                               &ctx);
+    paddle::lite::arm::math::gemm_prepack_int8(
+        tpackedA.data<int8_t>(),
+        db,
+        dbias_int8,
+        dc_int8,
+        m,
+        n,
+        k,
+        has_bias,
+        paddle::lite::arm::math::GemmMBias,
+        trb,
+        scale_merge_int8.data(),
+        act_param,
+        &ctx,
+        false);
     t0.Stop();
   }
   LOG(INFO) << "gemm_int8_int8 output: M: " << m << ", N: " << n << ", K: " << k
@@ -333,18 +341,21 @@ bool test_gemm_int8(bool tra,
   t0.Reset();
   for (int i = 0; i < FLAGS_repeats; ++i) {
     t0.Start();
-    paddle::lite::arm::math::gemm_prepack_int8(tpackedA.data<int8_t>(),
-                                               db,
-                                               dbias,
-                                               dc_fp32,
-                                               m,
-                                               n,
-                                               k,
-                                               has_bias,
-                                               trb,
-                                               scale_merge_fp32.data(),
-                                               act_param,
-                                               &ctx);
+    paddle::lite::arm::math::gemm_prepack_int8(
+        tpackedA.data<int8_t>(),
+        db,
+        dbias,
+        dc_fp32,
+        m,
+        n,
+        k,
+        has_bias,
+        paddle::lite::arm::math::GemmMBias,
+        trb,
+        scale_merge_fp32.data(),
+        act_param,
+        &ctx,
+        false);
     t0.Stop();
   }
   LOG(INFO) << "gemm_int8_fp32 output: M: " << m << ", N: " << n << ", K: " << k
@@ -440,7 +451,7 @@ bool test_gemm_int8(bool tra,
     tensor_cmp_host(tc_basic_int8, tc_sve_int8, max_ratio, max_diff);
     LOG(INFO) << "sve int8 compare result, max diff: " << max_diff
               << ", max ratio: " << max_ratio;
-    if (0 && fabs(max_ratio) > 1e-4f) {
+    if (fabs(max_ratio) > 1e-4f) {
       Tensor tdiff;
       tdiff.Resize(tc_sve_int8.dims());
       tdiff.set_precision(PRECISION(kInt8));
@@ -485,11 +496,11 @@ TEST(TestLiteGemmInt8, gemm_prepacked_int8) {
 #ifdef LITE_WITH_ARM
     paddle::lite::DeviceInfo::Init();
 #endif
-    for (auto& m : {1, 3, 8, 32, 33, 34, 35, 38, 41, 397}) {
-      for (auto& n : {1, 3, 13, 141, 512, 789}) {
+    for (auto& m : {1, 3, 6, 8, 32, 33, 34, 35, 38, 41, 397}) {
+      for (auto& n : {1, 3, 6, 13, 35, 141, 512, 789}) {
         for (auto& k : {1, 3, 8, 59, 60, 61, 62, 66, 67, 71}) {
           for (auto& tra : {false, true}) {
-            for (auto& trb : {false, true}) {
+            for (auto& trb : {true, false}) {
               for (auto& has_bias : {false, true}) {
                 for (auto& relu_type : {0, 1}) {
                   for (auto& th : {1, 2, 4}) {

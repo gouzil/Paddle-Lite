@@ -38,7 +38,8 @@ class TestGreaterOp(AutoScanTest):
         ]
         self.enable_testing_on_place(places=host_op_config)
         self.enable_testing_on_place(TargetType.NNAdapter, PrecisionType.FP32)
-        self.enable_devices_on_nnadapter(device_names=["cambricon_mlu"])
+        self.enable_devices_on_nnadapter(
+            device_names=["cambricon_mlu", "kunlunxin_xtcl"])
 
     def is_program_valid(self,
                          program_config: ProgramConfig,
@@ -54,6 +55,10 @@ class TestGreaterOp(AutoScanTest):
         op_type_str = draw(st.sampled_from(["greater_equal", "greater_than"]))
         process_type = draw(
             st.sampled_from(["type_int64", "type_float", "type_int32"]))
+
+        in_shape_x = draw(st.sampled_from([in_shape_x, []]))
+        if in_shape_x == []:
+            axis = 0
 
         if axis == -1:
             in_shape_y = in_shape_x
@@ -108,7 +113,17 @@ class TestGreaterOp(AutoScanTest):
                                                                           1e-5)
 
     def add_ignore_pass_case(self):
-        pass
+        def _teller3(program_config, predictor_config):
+            target_type = predictor_config.target()
+            in_x_shape = list(program_config.inputs["data_x"].shape)
+            in_y_shape = list(program_config.inputs["data_y"].shape)
+            if target_type != TargetType.ARM and target_type != TargetType.Host:
+                if len(in_x_shape) == 0 or len(in_y_shape) == 0:
+                    return True
+
+        self.add_ignore_check_case(_teller3,
+                                   IgnoreReasons.PADDLELITE_NOT_SUPPORT,
+                                   "Only test 0D-tensor on CPU(ARM/Host) now.")
 
     def test(self, *args, **kwargs):
         self.run_and_statis(quant=False, max_examples=300)

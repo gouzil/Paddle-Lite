@@ -20,8 +20,12 @@ namespace paddle {
 namespace lite {
 namespace kernels {
 namespace xpu {
-
-class XPUFcCompute : public KernelLite<TARGET(kXPU), PRECISION(kFloat)> {
+template <typename TGEMM,
+          typename TW,
+          typename DX,
+          typename DY,
+          PrecisionType PType>
+class XPUFcCompute : public KernelLite<TARGET(kXPU), PType> {
  public:
   using param_t = operators::XPUFcParam;
 
@@ -32,10 +36,14 @@ class XPUFcCompute : public KernelLite<TARGET(kXPU), PRECISION(kFloat)> {
   virtual ~XPUFcCompute() = default;
 
  private:
-  // TODO(weihaoji): remove cpu w_max after xpu fc wrapper refactor
-  float w_max;
   XPUScratchPadGuard input_max_guard_;
+  XPUScratchPadGuard output_max_guard_;
   XPUQuantData xpu_quant_weight_;
+  XPUScratchPadGuard weight_one_value_guard_;
+  bool per_channel_;
+  bool enable_int8_;
+  bool quant_int16_;
+  bool local_quant_;
 };
 
 }  // namespace xpu

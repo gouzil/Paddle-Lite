@@ -53,8 +53,9 @@ class TestReduceMeanOp(AutoScanTest):
         ]
         self.enable_testing_on_place(places=opencl_places)
         self.enable_testing_on_place(TargetType.NNAdapter, PrecisionType.FP32)
-        self.enable_devices_on_nnadapter(
-            device_names=["cambricon_mlu", "intel_openvino"])
+        self.enable_devices_on_nnadapter(device_names=[
+            "cambricon_mlu", "intel_openvino", "kunlunxin_xtcl"
+        ])
 
     def is_program_valid(self,
                          program_config: ProgramConfig,
@@ -109,6 +110,15 @@ class TestReduceMeanOp(AutoScanTest):
             _teller1, IgnoreReasons.ACCURACY_ERROR,
             "The op output has diff in a specific case on opencl. We need to fix it as soon as possible."
         )
+
+        def _teller3(program_config, predictor_config):
+            target_type = predictor_config.target()
+            if target_type == TargetType.OpenCL:
+                return True
+
+        self.add_ignore_check_case(_teller3,
+                                   IgnoreReasons.PADDLELITE_NOT_SUPPORT,
+                                   "Expected kernel_type false.")
 
     def test(self, *args, **kwargs):
         self.run_and_statis(quant=False, max_examples=100)

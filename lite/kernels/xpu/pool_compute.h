@@ -20,14 +20,19 @@ namespace paddle {
 namespace lite {
 namespace kernels {
 namespace xpu {
-
-class Pool2DCompute : public KernelLite<TARGET(kXPU), PRECISION(kFloat)> {
+template <typename InType, PrecisionType PType>
+class Pool2DCompute : public KernelLite<TARGET(kXPU), PType> {
  public:
   using param_t = operators::PoolParam;
 
+  void PrepareForRun() override;
   virtual void Run();
 
   virtual ~Pool2DCompute() = default;
+
+ private:
+  XPUScratchPadGuard quant_input_max_value_guard_;
+  XPUScratchPadGuard quant_output_max_value_guard_;
 };
 
 }  // namespace xpu

@@ -28,7 +28,60 @@ namespace nnadapter {
 namespace operation {
 
 NNADAPTER_EXPORT bool ValidateSlice(const core::Operation* operation) {
-  return false;
+  return true;
+}
+
+NNADAPTER_EXPORT int ExecuteSlice(core::Operation* operation) {
+  SLICE_OPERATION_EXTRACT_INPUTS_OUTPUTS
+
+  // Allocate and calculate the output operands
+  int status = -1;
+  auto output_buffer = AllocateOperand(output_operand);
+  auto input_dims_count = input_operand->type.dimensions.count;
+  auto input_dims_data = input_operand->type.dimensions.data;
+  std::vector<int32_t> input_shape(input_dims_data,
+                                   input_dims_data + input_dims_count);
+  auto input_precision = input_operand->type.precision;
+  switch (input_precision) {
+    case NNADAPTER_FLOAT32:
+      status = math::slice(reinterpret_cast<float*>(input_operand->buffer),
+                           input_shape,
+                           axes_count,
+                           axes,
+                           starts,
+                           ends,
+                           steps,
+                           reinterpret_cast<float*>(output_buffer));
+      break;
+    case NNADAPTER_INT32:
+      status = math::slice(reinterpret_cast<int32_t*>(input_operand->buffer),
+                           input_shape,
+                           axes_count,
+                           axes,
+                           starts,
+                           ends,
+                           steps,
+                           reinterpret_cast<int32_t*>(output_buffer));
+      break;
+    case NNADAPTER_INT64:
+      status = math::slice(reinterpret_cast<int64_t*>(input_operand->buffer),
+                           input_shape,
+                           axes_count,
+                           axes,
+                           starts,
+                           ends,
+                           steps,
+                           reinterpret_cast<int64_t*>(output_buffer));
+      break;
+    default:
+      NNADAPTER_LOG(FATAL) << "Unsupported precision code("
+                           << OperandPrecisionCodeToString(input_precision)
+                           << ") for " << OperationTypeToString(operation->type)
+                           << " is found!";
+      break;
+  }
+  NNADAPTER_CHECK_EQ(status, 0);
+  return NNADAPTER_NO_ERROR;
 }
 
 NNADAPTER_EXPORT int PrepareSlice(core::Operation* operation) {
@@ -36,26 +89,44 @@ NNADAPTER_EXPORT int PrepareSlice(core::Operation* operation) {
 
   // Infer the shape and type of output operands
   CopyOperandTypeExceptQuantParams(&output_operand->type, input_operand->type);
+
+  if (IsTemporaryShapeOperand(starts_operand) ||
+      IsTemporaryShapeOperand(ends_operand) ||
+      IsTemporaryShapeOperand(steps_operand)) {
+    output_operand->type.lifetime = NNADAPTER_TEMPORARY_SHAPE;
+    for (uint32_t i = 0; i < axes_count; i++) {
+      output_operand->type.dimensions.data[axes[i]] = NNADAPTER_UNKNOWN;
+      output_operand->type.dimensions.dynamic_data[i][axes[i]] =
+          NNADAPTER_UNKNOWN;
+    }
+    NNADAPTER_VLOG(5) << "output: " << OperandToString(output_operand);
+    return NNADAPTER_NO_ERROR;
+  }
+
+  if (IsTemporaryVariableOperand(starts_operand) ||
+      IsTemporaryVariableOperand(ends_operand) ||
+      IsTemporaryVariableOperand(steps_operand)) {
+    NNADAPTER_LOG(FATAL) << "Start or end or step is not supported as variable";
+  }
+
   auto infer_output_shape = [&](int32_t* output_dimensions) {
     for (size_t i = 0; i < axes_count; ++i) {
       int dim = output_dimensions[axes[i]];
       if (dim > 0) {
         int start = starts[i] < 0 ? (starts[i] + dim) : starts[i];
+        ends[i] = std::min(ends[i], dim);
         int end = ends[i] < 0 ? (ends[i] + dim) : ends[i];
         int step = std::abs(steps[i]);
         start = std::max(start, 0);
         end = std::max(end, 0);
-        end = std::min(end, dim);
         output_dimensions[axes[i]] = (std::abs(end - start) + step - 1) / step;
       }
     }
   };
-
   infer_output_shape(output_operand->type.dimensions.data);
   for (uint32_t i = 0; i < input_operand->type.dimensions.dynamic_count; i++) {
     infer_output_shape(output_operand->type.dimensions.dynamic_data[i]);
   }
-
   if (IsTemporaryShapeOperand(input_operand)) {
     output_operand->type.lifetime = NNADAPTER_TEMPORARY_SHAPE;
     auto& temporary_shape = *(GetTemporaryShape(input_operand));
@@ -85,13 +156,13 @@ NNADAPTER_EXPORT int PrepareSlice(core::Operation* operation) {
           dimension_type.dynamic_data[i]);
     }
     SetTemporaryShape(output_operand, dimension_type);
+  } else if (IsConstantOperand(input_operand)) {
+    ExecuteSlice(operation);
+    output_operand->type.lifetime = NNADAPTER_CONSTANT_COPY;
   }
+
   NNADAPTER_VLOG(5) << "output: " << OperandToString(output_operand);
   return NNADAPTER_NO_ERROR;
-}
-
-NNADAPTER_EXPORT int ExecuteSlice(core::Operation* operation) {
-  return NNADAPTER_FEATURE_NOT_SUPPORTED;
 }
 
 }  // namespace operation

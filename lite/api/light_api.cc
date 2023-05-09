@@ -22,15 +22,32 @@
 namespace paddle {
 namespace lite {
 
-void LightPredictor::Build(const std::string& lite_model_file,
-                           bool model_from_memory) {
-  if (model_from_memory) {
-    LoadModelNaiveFromMemory(
-        lite_model_file, scope_.get(), program_desc_.get());
-  } else {
-    LoadModelNaiveFromFile(lite_model_file, scope_.get(), program_desc_.get());
-  }
+void LightPredictor::Run() {
+  CheckInputValid();
 
+#ifdef LITE_WITH_XPU
+  CHECK(target_configs_.count(TARGET(kXPU)))
+      << "XPU runtime option is not initialized!";
+  XPULoadRunTimeOptionGuard xpu_load_runtime_option_guard(
+      reinterpret_cast<lite::XPURunTimeOption*>(
+          target_configs_.at(TARGET(kXPU)).get()));
+  std::vector<std::vector<int64_t>> query_shape;
+  for (size_t i = 0; i < input_names_.size(); i++) {
+    query_shape.push_back(std::vector<int64_t>(GetInput(i)->dims().data()));
+  }
+  lite::TargetWrapperXPU::MallocL3Cache(query_shape);
+#endif
+
+  program_->Run();
+  if (bool_clear_tensor_) ClearTensorArray(program_desc_);
+
+#ifdef LITE_WITH_XPU
+  lite::TargetWrapperXPU::FreeL3Cache();
+#endif
+}
+
+void LightPredictor::Build(const std::string& lite_model_file) {
+  LoadModelNaiveFromFile(lite_model_file, scope_.get(), program_desc_.get());
   // For weight quantization of post training, load the int8/16 weights
   // for optimized model, and dequant it to fp32.
   DequantizeWeight();
@@ -38,7 +55,24 @@ void LightPredictor::Build(const std::string& lite_model_file,
   // fp16 Weight convert
   WeightFP32ToFP16();
 #endif
-  BuildRuntimeProgram(program_desc_);
+  BuildRuntimeProgram(program_desc_, use_low_precision_);
+  PrepareFeedFetch();
+}
+
+void LightPredictor::Build(const char* lite_model_buffer_ptr,
+                           size_t lite_model_buffer_size) {
+  LoadModelNaiveFromMemory(lite_model_buffer_ptr,
+                           lite_model_buffer_size,
+                           scope_.get(),
+                           program_desc_.get());
+  // For weight quantization of post training, load the int8/16 weights
+  // for optimized model, and dequant it to fp32.
+  DequantizeWeight();
+#ifdef ENABLE_ARM_FP16
+  // fp16 Weight convert
+  WeightFP32ToFP16();
+#endif
+  BuildRuntimeProgram(program_desc_, use_low_precision_);
   PrepareFeedFetch();
 }
 
@@ -72,12 +106,18 @@ void LightPredictor::Build(const std::string& model_dir,
   // fp16 Weight convert
   WeightFP32ToFP16();
 #endif
-  BuildRuntimeProgram(program_desc_);
+  BuildRuntimeProgram(program_desc_, use_low_precision_);
   PrepareFeedFetch();
 }
 
-#if !defined(LITE_WITH_FPGA) && !defined(LITE_WITH_METAL)
+#if !defined(LITE_WITH_METAL)
 Tensor* LightPredictor::GetInput(size_t offset) {
+#ifdef LITE_WITH_XPU
+// CHECK(target_configs_.count(TARGET(kXPU))) << "XPU runtime option is not
+// initialized!";
+// XPU_CALL(xpu_set_device(reinterpret_cast<lite::XPURunTimeOption
+// *>(target_configs_[TARGET(kXPU)].get())->xpu_dev_num));
+#endif
   CHECK(input_names_.size() > offset)
       << "The network has " << input_names_.size() << " inputs"
       << ", the offset should be less than this.";
@@ -194,7 +234,8 @@ void LightPredictor::PrepareFeedFetch() {
 }
 
 void LightPredictor::BuildRuntimeProgram(
-    const std::shared_ptr<const cpp::ProgramDesc>& program_desc) {
+    const std::shared_ptr<const cpp::ProgramDesc>& program_desc,
+    bool use_precision_low) {
   auto* exe_scope = &scope_->NewScope();
   // Prepare workspace
   scope_->Var("feed")->GetMutable<std::vector<lite::Tensor>>();
@@ -226,14 +267,73 @@ void LightPredictor::BuildRuntimeProgram(
       if (op_desc->Type() == "lod_array_length") bool_clear_tensor_ = true;
     }
   }
+
+#ifdef ENABLE_ARM_FP16
+  int low_precision = 1;
+  std::string old_op;
+
+  if (lite::DeviceInfo::Global().has_fp16()) {
+    for (size_t i = 0; i < program_desc->BlocksSize(); i++) {
+      auto* block_desc = program_desc->GetBlock<cpp::BlockDesc>(i);
+      for (size_t op_idx = 0; op_idx < block_desc->OpsSize(); op_idx++) {
+        auto op_desc = block_desc->GetOp<cpp::OpDesc>(op_idx);
+        CHECK(op_desc);
+        std::string op_type = op_desc->Type();
+
+        auto op = LiteOpRegistry::Global().Create(op_type);
+
+        std::unique_ptr<KernelBase> kernel;
+        if (op_desc->HasAttr(kKernelTypeAttr)) {
+          // Create op and pick up the best kernel according to the
+          // kKernelTypeAttr attribute
+          auto kernel_type = op_desc->GetAttr<std::string>(kKernelTypeAttr);
+          std::string alias;
+          Place place;
+          KernelBase::ParseKernelType(kernel_type, &op_type, &alias, &place);
+          op->Attach(*op_desc, exe_scope);
+          if (op_type != "feed" && op_type != "fetch") {
+            if (place.precision == PRECISION(kFloat)) {
+              place.precision = PRECISION(kFP16);
+            } else if (place.precision == PRECISION(kAny)) {
+              place.precision = PRECISION(kFP16);
+            } else {
+              low_precision = 0;
+            }
+          }
+          auto kernels = op->CreateKernels({place});
+          if (kernels.size() == 0) {
+            low_precision = 0;
+          }
+        }
+        if (old_op == "feed") {
+          if (op_type != "conv2d") {
+            low_precision = 0;
+          }
+        }
+        old_op = op_type;
+      }
+    }
+  } else {
+    low_precision = 0;
+  }
+  if (low_precision == 1 && use_precision_low) {
+    use_low_precision_ = true;
+    LOG(INFO) << "Inference with low precision!";
+  } else {
+    use_low_precision_ = false;
+  }
+#endif
+
   // Only extracting the ops and generate the runtime program from the main
   // block desc
-  program_.reset(new RuntimeProgram(program_desc, exe_scope, kRootBlockIdx));
+  program_.reset(new RuntimeProgram(
+      program_desc, exe_scope, kRootBlockIdx, use_low_precision_));
 }
 
 void LightPredictor::DequantizeWeight() {
   std::shared_ptr<const cpp::ProgramDesc> program_desc = program_desc_;
   CHECK(program_desc != nullptr);
+
 #define PROCESS_CONV2D_DATA()                                             \
   for (int64_t i = 0; i < ch; ++i) {                                      \
     for (int64_t j = 0; j < offset; ++j) {                                \
@@ -439,6 +539,7 @@ bool LightPredictor::TryShrinkMemory() {
   }
   return true;
 }
+
 void LightPredictor::ClearTensorArray(
     const std::shared_ptr<const cpp::ProgramDesc>& program_desc) {
   for (size_t blk_idx = 0; blk_idx < program_desc->BlocksSize(); blk_idx++) {
@@ -459,5 +560,33 @@ void LightPredictor::ClearTensorArray(
     }
   }
 }
+
+void LightPredictor::SetTargetConfigs(
+    const std::map<TargetType, std::shared_ptr<void>>& target_configs) {
+#ifdef LITE_WITH_XPU
+  std::shared_ptr<void> runtime_option =
+      std::shared_ptr<lite::XPURunTimeOption>(new lite::XPURunTimeOption);
+  target_configs_.emplace(TARGET(kXPU), std::move(runtime_option));
+  if (target_configs.at(TARGET(kXPU)).get()) {
+    reinterpret_cast<lite::XPURunTimeOption*>(
+        target_configs_[TARGET(kXPU)].get())
+        ->Set(reinterpret_cast<const lite::XPURunTimeOption*>(
+            target_configs.at(TARGET(kXPU)).get()));
+  }
+#endif
+}
+
+void LightPredictor::SetStream(TargetType target, void* stream) {
+  if (target == TARGET(kXPU)) {
+#ifdef LITE_WITH_XPU
+    CHECK(target_configs_.count(TARGET(kXPU)))
+        << "XPU runtime option is not initialized!";
+    reinterpret_cast<lite::XPURunTimeOption*>(
+        target_configs_[TARGET(kXPU)].get())
+        ->xpu_stream.SetXPUStream(stream);
+#endif
+  }
+}
+
 }  // namespace lite
 }  // namespace paddle

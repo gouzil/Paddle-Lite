@@ -24,7 +24,7 @@ namespace kernels {
 namespace xpu {
 
 void BoxCoderCompute::PrepareForRun() {
-  auto& param = this->Param<param_t>();
+  auto& param = this->template Param<param_t>();
   std::vector<float> variance = param.variance;
 
   CHECK((variance.size() == 4) || (variance.size() == 0)) << "variance_size is "
@@ -39,8 +39,8 @@ void BoxCoderCompute::PrepareForRun() {
 }
 
 void BoxCoderCompute::Run() {
-  auto& param = this->Param<param_t>();
-  auto& ctx = this->ctx_->As<XPUContext>();
+  auto& param = this->template Param<param_t>();
+  auto& ctx = this->ctx_->template As<XPUContext>();
 
   auto prior_box_var_size = 0;
   auto* prior_box = param.prior_box;
@@ -66,7 +66,8 @@ void BoxCoderCompute::Run() {
   output_box->Resize({row, col, len});
   auto* output = output_box->mutable_data<float>(TARGET(kXPU));
   float* variance_xpu_ptr =
-      reinterpret_cast<float*>(variance_xpu_guard_->addr_);
+      variance_xpu_guard_ ? reinterpret_cast<float*>(variance_xpu_guard_->addr_)
+                          : nullptr;
 
   if (code_type == "encode_center_size") {
     int r = xdnn::box_coder_encoder<float>(ctx.GetRawContext(),

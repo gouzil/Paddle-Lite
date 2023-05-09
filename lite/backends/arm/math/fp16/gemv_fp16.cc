@@ -277,7 +277,7 @@ void gemv_fp16_trans(const float16_t *A,
                      ARMContext *ctx) {
   int Nup = (N + 7) / 8 * 8;
   int Mup = (M + 7) / 8 * 8;
-  auto size = (Mup * 3 + Nup);
+  auto size = (Mup * 2 + Nup);
   ctx->ExtendWorkspace(size * sizeof(float16_t));
   auto ptr_zero = ctx->workspace_data<float16_t>();
   memset(ptr_zero, 0, Mup * sizeof(float16_t));
@@ -289,12 +289,8 @@ void gemv_fp16_trans(const float16_t *A,
     memset(bias_ptr, 0, Mup * sizeof(float16_t));
   }
   float16_t *ptr_w = bias_ptr + Mup;
-  lite::TargetWrapperHost::MemcpySync(ptr_w, A, N * sizeof(float16_t));
+  lite::TargetWrapperHost::MemcpySync(ptr_w, x, N * sizeof(float16_t));
   memset(ptr_w + N, 0, (Nup - N) * sizeof(float16_t));
-  float16_t *data_in = ptr_w + Nup;
-  lite::TargetWrapperHost::MemcpySync(
-      data_in, x + (N - 1) * M, M * sizeof(float16_t));
-  memset(data_in + M, 0, (Mup - M) * sizeof(float16_t));
   memset(y, 0, M * sizeof(float16_t));
   float16_t local_alpha = 0.f;
   float16_t offset = 0.f;
@@ -313,11 +309,11 @@ void gemv_fp16_trans(const float16_t *A,
   int cnt_n = N >> 3;
   int rem_n = N & 7;
   if (rem_n > 0) cnt_n++;
-  LITE_PARALLEL_BEGIN(j, tid, cnt_n) {
+  for (int j = 0; j < cnt_n; ++j) {
     int y_index = j * 8;
     const float16_t *ptr_in = ptr_w + y_index;
     const float16_t *inptr_row[8];
-    inptr_row[0] = x + y_index * M;
+    inptr_row[0] = A + y_index * M;
     for (int i = 1; i < 8; i++) {
       inptr_row[i] = inptr_row[i - 1] + M;
     }
@@ -486,7 +482,6 @@ void gemv_fp16_trans(const float16_t *A,
       out_ptr++;
     }
   }
-  LITE_PARALLEL_END();
 }
 
 void gemv_fp16(const float16_t *A,
@@ -544,9 +539,8 @@ void gemv_fp16(const float16_t *A,
   float16x8_t vzero = vdupq_n_f16(0.f);
   float16x8_t valpha = vdupq_n_f16(local_alpha);
 #ifdef __aarch64__
-  int out_cnt = M >> 3;
+  int out_cnt = Mup >> 3;
   int remain = M & 7;
-  if (remain > 0) out_cnt++;
   float16x8_t voffset = vdupq_n_f16(offset);
   float16x8_t vthreshold = vdupq_n_f16(threshold);
   int stride = 1;

@@ -34,6 +34,8 @@ class TestWhereOp(AutoScanTest):
             Place(TargetType.Host, PrecisionType.FP32, DataLayoutType.NCHW)
         ]
         self.enable_testing_on_place(places=host_places)
+        self.enable_testing_on_place(TargetType.NNAdapter, PrecisionType.FP32)
+        self.enable_devices_on_nnadapter(device_names=["kunlunxin_xtcl"])
 
     def is_program_valid(self,
                          program_config: ProgramConfig,
@@ -46,6 +48,11 @@ class TestWhereOp(AutoScanTest):
                 st.integers(
                     min_value=1, max_value=50), min_size=1, max_size=1))
         in_dtype = draw(st.sampled_from([np.float32, np.int32, np.int64]))
+
+        if self.get_nnadapter_device_name() == "kunlunxin_xtcl":
+            in_shape = [1]
+
+        in_shape = draw(st.sampled_from([in_shape, []]))
 
         def generate_X_data():
             return np.random.normal(0.0, 5.0, in_shape).astype(in_dtype)
@@ -63,7 +70,7 @@ class TestWhereOp(AutoScanTest):
                 "out_dtype": 0,  # bool
             })
 
-        cast_op.outputs_dtype = {"middle_data": np.bool}
+        cast_op.outputs_dtype = {"middle_data": np.bool_}
 
         where_op = OpConfig(
             type="where",
@@ -94,10 +101,22 @@ class TestWhereOp(AutoScanTest):
         return self.get_predictor_configs(), [""], (1e-5, 1e-5)
 
     def add_ignore_pass_case(self):
-        pass
+        def _teller1(program_config, predictor_config):
+            target_type = predictor_config.target()
+            in_x_shape = list(program_config.inputs["X_data"].shape)
+            if target_type != TargetType.ARM and target_type != TargetType.Host:
+                if len(in_x_shape) == 0:
+                    return True
+
+        self.add_ignore_check_case(_teller1,
+                                   IgnoreReasons.PADDLELITE_NOT_SUPPORT,
+                                   "Only test 0D-tensor on CPU(ARM/Host) now.")
 
     def test(self, *args, **kwargs):
-        self.run_and_statis(quant=False, max_examples=25)
+        max_examples = 25
+        if self.get_nnadapter_device_name() == "kunlunxin_xtcl":
+            max_examples = 200
+        self.run_and_statis(quant=False, max_examples=max_examples)
 
 
 if __name__ == "__main__":

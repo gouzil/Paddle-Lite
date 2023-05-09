@@ -44,7 +44,9 @@ class TestEqualOp(AutoScanTest):
         ]
         self.enable_testing_on_place(places=metal_places)
         self.enable_testing_on_place(TargetType.NNAdapter, PrecisionType.FP32)
-        self.enable_devices_on_nnadapter(device_names=["cambricon_mlu"])
+        self.enable_devices_on_nnadapter(device_names=[
+            "cambricon_mlu", "intel_openvino", "kunlunxin_xtcl"
+        ])
         # "nvidia_tensorrt" removed by zhoukangkang
 
     def is_program_valid(self,
@@ -79,6 +81,8 @@ class TestEqualOp(AutoScanTest):
                     min_size=3,
                     max_size=3))
             in_shape.insert(0, 1)
+
+        in_shape = draw(st.sampled_from([in_shape, []]))
 
         data_type = draw(st.sampled_from(['float32', 'int32', 'int64']))
 
@@ -130,6 +134,18 @@ class TestEqualOp(AutoScanTest):
             teller1, IgnoreReasons.ACCURACY_ERROR,
             "The op output has diff in a specific case. We need to fix it as soon as possible."
         )
+
+        def _teller3(program_config, predictor_config):
+            target_type = predictor_config.target()
+            in_x_shape = list(program_config.inputs["input_data_x"].shape)
+            in_y_shape = list(program_config.inputs["input_data_y"].shape)
+            if target_type != TargetType.ARM and target_type != TargetType.Host:
+                if len(in_x_shape) == 0 or len(in_y_shape) == 0:
+                    return True
+
+        self.add_ignore_check_case(_teller3,
+                                   IgnoreReasons.PADDLELITE_NOT_SUPPORT,
+                                   "Only test 0D-tensor on CPU(ARM/Host) now.")
 
     def test(self, *args, **kwargs):
         self.run_and_statis(quant=False, max_examples=300)

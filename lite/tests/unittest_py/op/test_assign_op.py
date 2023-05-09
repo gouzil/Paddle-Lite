@@ -34,8 +34,9 @@ class TestAssignOp(AutoScanTest):
             DataLayoutType.NCHW,
             thread=[1, 2])
         self.enable_testing_on_place(TargetType.NNAdapter, PrecisionType.FP32)
-        self.enable_devices_on_nnadapter(
-            device_names=["nvidia_tensorrt", "intel_openvino"])
+        self.enable_devices_on_nnadapter(device_names=[
+            "nvidia_tensorrt", "intel_openvino", "kunlunxin_xtcl"
+        ])
 
     def is_program_valid(self,
                          program_config: ProgramConfig,
@@ -46,7 +47,7 @@ class TestAssignOp(AutoScanTest):
         in_shape = draw(
             st.lists(
                 st.integers(
-                    min_value=1, max_value=8), min_size=1, max_size=4))
+                    min_value=1, max_value=8), min_size=0, max_size=4))
         assign_op = OpConfig(
             type="assign",
             inputs={"X": ["input_data"]},
@@ -72,6 +73,17 @@ class TestAssignOp(AutoScanTest):
         self.add_ignore_check_case(
             teller1, IgnoreReasons.PADDLELITE_NOT_SUPPORT,
             "Lite does not support 'in_shape_size == 1' on nvidia_tensorrt.")
+
+        def _teller2(program_config, predictor_config):
+            target_type = predictor_config.target()
+            in_x_shape = list(program_config.inputs["input_data"].shape)
+            if target_type != TargetType.ARM and target_type != TargetType.Host:
+                if len(in_x_shape) == 0:
+                    return True
+
+        self.add_ignore_check_case(_teller2,
+                                   IgnoreReasons.PADDLELITE_NOT_SUPPORT,
+                                   "Only test 0D-tensor on CPU(ARM/Host) now.")
 
     def test(self, *args, **kwargs):
         self.run_and_statis(quant=False, max_examples=25)
